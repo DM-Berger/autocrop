@@ -43,6 +43,14 @@ def make_masked(img: ndarray, mask: ndarray, imin: Any = None, imax: Any = None)
     return img3d
 
 
+def pad_to_cube(img: ndarray) -> ndarray:
+    """assumes images is 1-channel and 3D"""
+    pad_shape = np.max(img.shape) * np.ones([3], dtype=int)
+    full_padlengths = pad_shape - np.array(img.shape)
+    pads = np.array([[padlength // 2, padlength // 2 + padlength % 2] for padlength in full_padlengths])
+    return np.pad(img, pads)
+
+
 def make_cheaty_nii(orig: nib.Nifti1Image, array: np.array) -> nib.Nifti1Image:
     """clone the header and extraneous info from `orig` and data in `array`
     into a new Nifti1Image object, for plotting
@@ -77,10 +85,13 @@ class BrainSlices:
     Parameters
     ----------
     img: eigenimage
+        If img is multichannel, assumes channels are last
     raw: original image
     """
 
-    def __init__(self, img: ndarray, mask: ndarray, n_slices: int = 4, invert: bool = False):
+    def __init__(
+        self, img: ndarray, masks: List[ndarray], masknames: List[str], n_slices: int = 4, invert: bool = False
+    ):
         def get_slice_tuples(src: ndarray) -> Any:
             tuples = []
             for idx, name in zip(slicers, self.slice_positions):
@@ -89,7 +100,8 @@ class BrainSlices:
 
         self.orig = img
         self.img = img
-        self.mask = mask
+        self.masks = masks
+        self.masknames = masknames
         self.mask_args = dict(vmin=0.0, vmax=1.0, cmap="winter", alpha=0.5)
 
         if invert:
@@ -101,21 +113,26 @@ class BrainSlices:
         slicers = [slice_base * i for i in range(1, n_slices)]
         self.slice_positions = [f"{i}/{n_slices}" for i in range(1, n_slices)]
         self.imgs = OrderedDict(get_slice_tuples(self.img))
-        self.masks = OrderedDict(get_slice_tuples(self.mask))
+        self.mask_slices = [OrderedDict(get_slice_tuples(m)) for m in self.masks]
 
-    def plot(self, vmin: int, ret: bool = False) -> Tuple[Figure, Axes]:
-        nrows, ncols = 1, 1  # one row for each slice position
-        all_imgs, all_masks = [], []
+    def plot(self, vmin: int = 0, ret: bool = False) -> Tuple[Figure, Axes]:
+        nrows, ncols = len(self.masks), 1  # one row for each slice position
+        all_imgs, all_masks = [], [[] for _ in self.masks]
         for i in range(3):  # We want this first so middle images are middle
             for j, position in enumerate(self.slice_positions):
-                img, mask = self.imgs[position][i][:, :], self.masks[position][i][:, :]
+                img = self.imgs[position][i][:, :]
                 all_imgs.append(img)
-                all_masks.append(mask)
+        for k, mask in enumerate(self.mask_slices):
+            for i in range(3):  # We want this first so middle images are middle
+                for j, position in enumerate(self.slice_positions):
+                    mask_slice = mask[position][i][:, :]
+                    all_masks[k].append(mask_slice)
+
         fig: Figure
         axes: Axes
-        fig, ax = plt.subplots(nrows=nrows, ncols=ncols, sharex=False, sharey=False)
+        fig, axes = plt.subplots(nrows=nrows, ncols=ncols, sharex=False, sharey=False)
         slice_img = np.concatenate(all_imgs, axis=1)
-        mask_img = np.concatenate(all_masks, axis=1)
+        mask_imgs = [np.concatenate(mask_slices, axis=1) for mask_slices in all_masks]
 
         # Consistently apply colormap since images are standardized but still
         # vary considerably in maximum and minimum values
@@ -128,11 +145,11 @@ class BrainSlices:
 
         img_args = dict(vmin=np.percentile(vals, [vmin]), vmax=np.max(vals), cmap="gray")
 
-        ax.imshow(slice_img, **img_args)
-        ax.imshow(mask_img, **self.mask_args)
-        ax.set_title("Masked")
-        ax.set_xticks([])
-        ax.set_yticks([])
+        for ax, mask_img, maskname in zip(axes.flat, mask_imgs, self.masknames):
+            ax.imshow(make_masked(slice_img, mask_img))
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_title(maskname)
 
         fig.tight_layout(h_pad=0)
         fig.subplots_adjust(hspace=0.0, wspace=0.0)
@@ -141,7 +158,7 @@ class BrainSlices:
         plt.show()
         return fig, ax
 
-    def animate_space(
+    def animate_masks(
         self,
         invert: bool = False,
         vmin: int = None,
@@ -182,9 +199,9 @@ class BrainSlices:
                 vn = vmin
             return vn, vm
 
-        def init_frame(ratio: float, fig: Figure, ax: Axes) -> Tuple[AxesImage, Colorbar, Text]:
+        def init_frame(src_mask: ndarray, ratio: float, fig: Figure, ax: Axes) -> Tuple[AxesImage, Colorbar, Text]:
             image = get_slice(self.img, ratio)
-            mask = get_slice(self.mask, ratio)
+            mask = get_slice(src_mask, ratio)
             title = "Cropped Voxels"
 
             vn, vm = get_vranges()
