@@ -23,15 +23,24 @@ from matplotlib.pyplot import Axes, Figure
 from matplotlib.text import Text
 from numpy import ndarray
 
-from constants import TEST, TEST_MASK
-from eigenimage import full_eigensignal
-
 
 @unique
 class Src(Enum):
     IMG = "IMG"
     RAW = "RAW"
     RAW_MEAN = "RAW_MEAN"
+
+
+def make_masked(img: ndarray, mask: ndarray, imin: Any = None, imax: Any = None) -> ndarray:
+    img3d = np.zeros([*img.shape, 3], dtype=int)
+    imin = img.min() if imin is None else imin
+    imax = img.max() if imax is None else imax
+    scaled = np.array(((img - imin) / (imax - imin)) * 255, dtype=int)
+    img3d[:, :, 0] = scaled
+    img3d[:, :, 1] = scaled
+    masked = scaled + 200 * np.array(mask, dtype=int)
+    img3d[:, :, 2] = masked
+    return img3d
 
 
 def make_cheaty_nii(orig: nib.Nifti1Image, array: np.array) -> nib.Nifti1Image:
@@ -71,134 +80,69 @@ class BrainSlices:
     raw: original image
     """
 
-    def __init__(
-        self, img: ndarray, raw: ndarray, n_slices: int = 4, invert: bool = False, subtract_raw_mean: bool = False
-    ):
+    def __init__(self, img: ndarray, mask: ndarray, n_slices: int = 4, invert: bool = False):
         def get_slice_tuples(src: ndarray) -> Any:
             tuples = []
             for idx, name in zip(slicers, self.slice_positions):
-                tuples.append((name, (src[idx[0], :, :, :], src[:, idx[1], :, :], src[:, :, idx[2], :])))
+                tuples.append((name, (src[idx[0], :, :], src[:, idx[1], :], src[:, :, idx[2]])))
             return tuples
 
         self.orig = img
         self.img = img
-        self.raw = raw
-
-        self.subtract_raw_mean = subtract_raw_mean
-        if subtract_raw_mean:
-            zeros = np.sum(raw, axis=3) == 0.0
-            mean_signal = np.mean(raw[~zeros], axis=0)
-            raw_mean = np.copy(raw) - mean_signal
-            raw_mean[zeros] = 0
-            self.raw_mean = raw_mean
+        self.mask = mask
+        self.mask_args = dict(vmin=0.0, vmax=1.0, cmap="winter", alpha=0.5)
 
         if invert:
             inverted = img.max() - img
             inverted[inverted == inverted.max()] = 0
             self.img = inverted
 
-        slice_base = np.array(self.img.shape[:-1]) // n_slices
+        slice_base = np.array(self.img.shape) // n_slices
         slicers = [slice_base * i for i in range(1, n_slices)]
         self.slice_positions = [f"{i}/{n_slices}" for i in range(1, n_slices)]
         self.imgs = OrderedDict(get_slice_tuples(self.img))
-        self.targets = OrderedDict(get_slice_tuples(self.raw))
+        self.masks = OrderedDict(get_slice_tuples(self.mask))
 
-    def plot(self, t: int, vmin: int, ret: bool = False) -> Tuple[Figure, Axes]:
-        nrows, ncols = 2, 1  # one row for each slice position
-        all_eigs, all_raws = [], []
+    def plot(self, vmin: int, ret: bool = False) -> Tuple[Figure, Axes]:
+        nrows, ncols = 1, 1  # one row for each slice position
+        all_imgs, all_masks = [], []
         for i in range(3):  # We want this first so middle images are middle
             for j, position in enumerate(self.slice_positions):
-                img, target = self.imgs[position][i][:, :, t], self.targets[position][i][:, :, t]
-                all_eigs.append(img)
-                all_raws.append(target)
+                img, mask = self.imgs[position][i][:, :], self.masks[position][i][:, :]
+                all_imgs.append(img)
+                all_masks.append(mask)
         fig: Figure
         axes: Axes
-        fig, axes = plt.subplots(nrows=nrows, ncols=ncols, sharex=False, sharey=False)
-        eig_img = np.concatenate(all_eigs, axis=1)
-        raw_img = np.concatenate(all_raws, axis=1)
+        fig, ax = plt.subplots(nrows=nrows, ncols=ncols, sharex=False, sharey=False)
+        slice_img = np.concatenate(all_imgs, axis=1)
+        mask_img = np.concatenate(all_masks, axis=1)
 
         # Consistently apply colormap since images are standardized but still
         # vary considerably in maximum and minimum values
-        vals = eig_img[eig_img > 0]
-        print("Eigenimage info for nonzero pixel values:")
+        vals = slice_img[slice_img > 0]
+        print("Image info for nonzero pixel values:")
         print(f"Max:  {np.max(vals)}")
         print(f"Min:  {np.min(vals)}")
         print(f"Mean: {np.mean(vals)}")
         print(f"Std.: {np.std(vals, ddof=1)}")
 
-        eig_args = dict(vmin=np.percentile(vals, [vmin]), vmax=np.max(vals), cmap="gray")
-        raw_args = dict(vmin=0.0, vmax=None, cmap="gray")
+        img_args = dict(vmin=np.percentile(vals, [vmin]), vmax=np.max(vals), cmap="gray")
 
-        axes[0].imshow(eig_img, **eig_args)
-        axes[0].set_title("Eigenimage")
-        axes[0].set_xticks([])
-        axes[0].set_yticks([])
-
-        axes[1].imshow(raw_img, **raw_args)
-        axes[1].set_title("Raw image")
-        axes[1].set_xticks([])
-        axes[1].set_yticks([])
+        ax.imshow(slice_img, **img_args)
+        ax.imshow(mask_img, **self.mask_args)
+        ax.set_title("Masked")
+        ax.set_xticks([])
+        ax.set_yticks([])
 
         fig.tight_layout(h_pad=0)
         fig.subplots_adjust(hspace=0.0, wspace=0.0)
         if ret:
-            return fig, axes
+            return fig, ax
         plt.show()
-        return fig, axes
-
-    def animate_time(self, ts: List[int], vmin: int, outfile: Path = None) -> Tuple[Figure, Axes]:
-        def get_slice_images(t: int) -> Tuple[ndarray, ndarray]:
-            """Returns eig_img, raw_img"""
-            all_eigs, all_raws = [], []
-            for i in range(3):  # We want this first so middle images are middle
-                for j, position in enumerate(self.slice_positions):
-                    img, target = self.imgs[position][i][:, :, t], self.targets[position][i][:, :, t]
-                    all_eigs.append(img)
-                    all_raws.append(target)
-            eig_img = np.concatenate(all_eigs, axis=1)
-            raw_img = np.concatenate(all_raws, axis=1)
-            return eig_img, raw_img
-
-        nrows, ncols = 2, 1  # one row for each slice position
-        fig: Figure
-        axes: Axes
-        fig, axes = plt.subplots(nrows=nrows, ncols=ncols, sharex=False, sharey=False)
-        axes[0].set_title("Eigenimage")
-        axes[0].set_xticks([])
-        axes[0].set_yticks([])
-        axes[1].set_title("Raw image")
-        axes[1].set_xticks([])
-        axes[1].set_yticks([])
-        fig.tight_layout(h_pad=0)
-        fig.set_size_inches(w=12, h=4)
-        fig.subplots_adjust(hspace=0.0, wspace=0.0)
-
-        eig_img, raw_img = get_slice_images(ts[0])
-
-        ims = []
-        for t in ts:
-            eig_img, raw_img = get_slice_images(t)
-
-            vals = eig_img[eig_img > 0]
-            eig_args = dict(vmin=np.percentile(vals, [vmin]), vmax=np.max(vals), cmap="gray")
-            raw_args = dict(vmin=0.0, vmax=None, cmap="gray")
-
-            # axes[0].set_title(f"Eigenimage (t = {t})")
-            eig = axes[0].imshow(eig_img, **eig_args, animated=True)
-            # axes[1].set_title(f"Raw image (t = {t})")
-            raw = axes[1].imshow(raw_img, **raw_args, animated=True)
-            ims.append([eig, raw])
-
-        ani = animation.ArtistAnimation(fig, ims, interval=50, blit=True, repeat_delay=100 if outfile is None else None)
-        if outfile is None:
-            plt.show()
-        else:
-            ani.save(outfile, codec="h264", dpi=256)
+        return fig, ax
 
     def animate_space(
         self,
-        ts: List[int],
-        average: bool = False,
         invert: bool = False,
         vmin: int = None,
         vmax: int = None,
@@ -206,135 +150,93 @@ class BrainSlices:
         interpolation: str = None,
         dpi: int = 256,
         fig_title: str = None,
-        eig_title: str = None,
         outfile: Path = None,
     ) -> None:
-        def get_slice(src: ndarray, t: int, ratio: float) -> ndarray:
+        def get_slice(src: ndarray, ratio: float) -> ndarray:
             """Returns eig_img, raw_img"""
             if ratio < 0 or ratio > 1:
                 raise ValueError("Invalid slice position")
-            x_max, y_max, z_max = np.array(src.shape[:-1], dtype=int)
-            x, y, z = np.array(np.floor(np.array(src.shape[:-1]) * ratio), dtype=int)
+            x_max, y_max, z_max = np.array(src.shape, dtype=int)
+            x, y, z = np.array(np.floor(np.array(src.shape) * ratio), dtype=int)
             x = int(10 + ratio * (x_max - 20))  # make x go from 10:-10 of x_max
             y = int(10 + ratio * (y_max - 20))  # make x go from 10:-10 of x_max
             x = x - 1 if x == x_max else x
             y = y - 1 if y == y_max else y
             z = z - 1 if z == z_max else z
-            return np.concatenate([src[x, :, :, t], src[:, y, :, t], src[:, :, z, t]], axis=1)
+            return np.concatenate([src[x, :, :], src[:, y, :], src[:, :, z]], axis=1)
 
-        def get_vranges(image: ndarray, imgsrc: Src) -> Tuple[Optional[float], Optional[float]]:
-            if imgsrc is Src.IMG:
-                vals = image[image > 0]
-                if vmax is None:
-                    vm = None
-                if isinstance(vmax, int):
-                    vm = np.percentile(vals, vmax)
-                if isinstance(vmax, float):
-                    vm = vmax
-                if vmin is None:
-                    vn = None
-                if isinstance(vmin, int):
-                    vn = np.percentile(vals, vmin)
-                if isinstance(vmin, float):
-                    vn = vmin
-                return vn, vm
-            if imgsrc is Src.RAW:
-                return np.min(image[image > 0]), None
-            if imgsrc is Src.RAW_MEAN:
-                return np.percentile(image, 5), None
+        def get_vranges() -> Tuple[Optional[float], Optional[float]]:
+            image = self.img
+            vals = image[image > 0]
+            if vmax is None:
+                vm = None
+            if isinstance(vmax, int):
+                vm = np.percentile(vals, vmax)
+            if isinstance(vmax, float):
+                vm = vmax
+            if vmin is None:
+                vn = None
+            if isinstance(vmin, int):
+                vn = np.percentile(vals, vmin)
+            if isinstance(vmin, float):
+                vn = vmin
+            return vn, vm
 
-        def init_frame(
-            t: Optional[int], ratio: float, fig: Figure, ax: Axes, imgsrc: Src = Src.IMG
-        ) -> Tuple[AxesImage, Colorbar, Text]:
-            t = -1 if t is None else t
-            if imgsrc is Src.IMG:
-                image = get_slice(self.img, t, ratio)
-                title = "Eigenimage"
-            elif imgsrc is Src.RAW:
-                image = get_slice(self.raw, t, ratio)
-                title = f"Raw fMRI"
-            elif imgsrc is Src.RAW_MEAN:
-                image = get_slice(self.raw_mean, t, ratio)
-                title = "Raw fMRI (minus mean signal)"
+        def init_frame(ratio: float, fig: Figure, ax: Axes) -> Tuple[AxesImage, Colorbar, Text]:
+            image = get_slice(self.img, ratio)
+            mask = get_slice(self.mask, ratio)
+            title = "Cropped Voxels"
 
-            vn, vm = get_vranges(image, imgsrc)
-            eig_args = dict(vmin=vn, vmax=vm, cmap=cmap, interpolation=interpolation)
-            im = ax.imshow(image, **eig_args, animated=True)
+            vn, vm = get_vranges()
+            plot_args = dict(vmin=vn, vmax=vm, cmap=cmap, interpolation=interpolation)
+            im = ax.imshow(image, **plot_args, animated=True)
+            mask = ax.imshow(mask, **self.mask_args, animated=True)
             ax.set_xticks([])
             ax.set_yticks([])
             title = ax.set_title(title)
             cb = fig.colorbar(im, ax=ax)
-            return im, cb, title
+            return im, mask, cb, title
 
-        def update_axis(t: Optional[int], ratio: float, ax: Axes, im: AxesImage, imgsrc: Src = Src.IMG) -> None:
-            t = -1 if t is None else t  # always use last frame
-            if imgsrc is Src.IMG:
-                image = get_slice(self.img, t, ratio)
-            elif imgsrc is Src.RAW:
-                image = get_slice(self.raw, t, ratio)
-            elif imgsrc is Src.RAW_MEAN:
-                image = get_slice(self.raw_mean, t, ratio)
-            vn, vm = get_vranges(image, imgsrc)
+        def update_axis(ratio: float, ax: Axes, im: AxesImage) -> None:
+            image = get_slice(ratio)
+            vn, vm = get_vranges()
             im.set_data(image)
             im.set_clim(vn, vm)
             # we don't have to update cb, it is linked
 
         # owe a lot to below for animating the colorbars
         # https://stackoverflow.com/questions/39472017/how-to-animate-the-colorbar-in-matplotlib
-        def init(
-            ts: List[int], title: Optional[str] = fig_title
-        ) -> Tuple[Figure, Axes, List[AxesImage], List[Colorbar], List[Text]]:
-            # one row for each time position, plus one for raw, one for raw mean
-            # subtracted
-            extra = int(self.subtract_raw_mean)
-            nrows = len(ts) + 1 + extra
-            ncols = 1
+        def init(title: Optional[str] = fig_title) -> Tuple[Figure, Axes, List[AxesImage], List[Colorbar], List[Text]]:
             fig: Figure
             axes: Axes
-            fig, axes = plt.subplots(nrows=nrows, ncols=ncols, sharex=False, sharey=False)
+            fig, ax = plt.subplots(nrows=1, ncols=1, sharex=False, sharey=False)
 
             ims: List[AxesImage] = []
             cbs: List[Colorbar] = []
             titles: List[Text] = []
 
-            for i, t in enumerate(ts):  # eigen images
-                ax = axes.flat[i]
-                im, cb, title = init_frame(t=t, ratio=0.0, fig=fig, ax=ax)
-                ims.append(im)
-                cbs.append(cb)
-                titles.append(title)
-
-            if self.subtract_raw_mean:
-                im, cb, title = init_frame(t=None, ratio=0.0, fig=fig, ax=axes[-2], imgsrc=Src.RAW_MEAN)
-                ims.append(im)
-                cbs.append(cb)
-                titles.append(title)
-            im, cb, title = init_frame(t=None, ratio=0.0, fig=fig, ax=axes[-1], imgsrc=Src.RAW)
+            im, cb, title = init_frame(ratio=0.0, fig=fig, ax=ax)
             ims.append(im)
             cbs.append(cb)
             titles.append(title)
 
             fig.tight_layout(h_pad=0)
-            h = np.max([2 * (len(ts) + extra), 7])  # 2 inches per row, min 7 inches
             if fig_title is not None:
                 fig.suptitle(fig_title)
-            fig.set_size_inches(w=8, h=h)
+            fig.set_size_inches(w=8, h=3)
             fig.subplots_adjust(hspace=0.2, wspace=0.0)
-            return fig, axes, ims, cbs, titles
+            return fig, ax, ims, cbs, titles
 
         N_FRAMES = 300
         ratios = np.linspace(0, 1, num=N_FRAMES)
 
-        fig, axes, ims, cbs, titles = init(ts=ts)
+        fig, ax, ims, cbs, titles = init()
         ani = None
+
         # awkward, but we need this defined after to close over the above variables
         def animate(f: int) -> None:
             ratio = ratios[f]
-            for i, t in enumerate(ts):
-                update_axis(t=t, ratio=ratio, ax=axes[i], im=ims[i])
-            if self.subtract_raw_mean:
-                update_axis(t=None, ratio=ratio, ax=axes[-2], im=ims[-2], imgsrc=Src.RAW_MEAN)
-            update_axis(t=None, ratio=ratio, ax=axes[-1], im=ims[-1], imgsrc=Src.RAW)
+            update_axis(ratio=ratio, ax=ax, im=ims[0])
 
         ani = animation.FuncAnimation(
             fig, animate, frames=N_FRAMES, blit=False, interval=12, repeat_delay=100 if outfile is None else None
