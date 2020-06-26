@@ -1,0 +1,6 @@
+# Directories
+data
+
+# Config
+**/.mypy_cache
+**/.vscode
