@@ -162,12 +162,13 @@ class BrainSlices:
             cb = fig.colorbar(im, ax=ax)
             return im, cb, title
 
-        def update_axis(src: ndarray, ratio: float, ax: Axes, im: AxesImage) -> None:
+        def update_axis(src: ndarray, ratio: float, ax: Axes, im: AxesImage) -> AxesImage:
             image = get_slice(src, ratio)
-            vn, vm = get_vranges()
+            # vn, vm = get_vranges()
             im.set_data(image)
-            im.set_clim(vn, vm)
+            # im.set_clim(vn, vm)
             # we don't have to update cb, it is linked
+            return im
 
         # owe a lot to below for animating the colorbars
         # https://stackoverflow.com/questions/39472017/how-to-animate-the-colorbar-in-matplotlib
@@ -200,16 +201,18 @@ class BrainSlices:
         ani = None
 
         # awkward, but we need this defined after to close over the above variables
-        def animate(f: int) -> None:
+        def animate(f: int) -> Any:
             ratio = ratios[f]
+            updated = []
             for im, masked, ax in zip(ims, self.maskeds, axes):
-                update_axis(src=masked, ratio=ratio, ax=ax, im=im)
+                updated.append(update_axis(src=masked, ratio=ratio, ax=ax, im=im))
+            return updated
 
         ani = animation.FuncAnimation(
             fig,
             animate,
             frames=N_FRAMES,
-            blit=False,
+            blit=True,
             interval=3600 / N_FRAMES,
             repeat_delay=100 if outfile is None else None,
         )

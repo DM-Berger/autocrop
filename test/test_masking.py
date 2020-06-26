@@ -72,7 +72,7 @@ def test_mask_full(capsys: Any) -> None:
 
 def test_mask_video(capsys: Any) -> None:
     N = 4
-    N_SAMPLES = 10
+    N_SAMPLES = 1
     np.random.seed(42)
     for i, path in enumerate(np.random.choice(CC359, size=N_SAMPLES, replace=False)):
         img = pad_to_cube(nib.load(str(path)).get_fdata())
