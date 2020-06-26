@@ -36,11 +36,19 @@ def make_masked(img: ndarray, mask: ndarray, imin: Any = None, imax: Any = None)
     imin = img.min() if imin is None else imin
     imax = img.max() if imax is None else imax
     scaled = np.array(((img - imin) / (imax - imin)) * 255, dtype=int)
-    img3d[:, :, 0] = scaled
-    img3d[:, :, 1] = scaled
-    masked = scaled + 200 * np.array(mask, dtype=int)
-    img3d[:, :, 2] = masked
-    return img3d
+    if len(img.shape) == 3:
+        img3d[:, :, :, 0] = scaled
+        img3d[:, :, :, 1] = scaled
+        masked = scaled + 200 * np.array(mask, dtype=int)
+        img3d[:, :, :, 2] = masked
+        return img3d
+    # if len(img.shape) == 3:
+    #     img3d[:, :, 0] = scaled
+    #     img3d[:, :, 1] = scaled
+    #     masked = scaled + 200 * np.array(mask, dtype=int)
+    #     img3d[:, :, 2] = masked
+    #     return img3d
+    raise ValueError("Only accepts 1-channel or 3-channel images")
 
 
 def pad_to_cube(img: ndarray) -> ndarray:
@@ -49,34 +57,6 @@ def pad_to_cube(img: ndarray) -> ndarray:
     full_padlengths = pad_shape - np.array(img.shape)
     pads = np.array([[padlength // 2, padlength // 2 + padlength % 2] for padlength in full_padlengths])
     return np.pad(img, pads)
-
-
-def make_cheaty_nii(orig: nib.Nifti1Image, array: np.array) -> nib.Nifti1Image:
-    """clone the header and extraneous info from `orig` and data in `array`
-    into a new Nifti1Image object, for plotting
-    """
-    # clone = deepcopy(orig)
-    affine = orig.affine
-    header = orig.header
-    extra = orig.extra
-    # return new_img_like(orig, array, copy_header=True)
-    return nib.Nifti1Image(dataobj=array, affine=affine, header=header, extra=extra)
-
-
-def slice_label(i: int, mids: ndarray, slicekey: str) -> str:
-    quarts = mids // 2  # slices at first quarter of the way through
-    quarts3_4 = mids + quarts  # slices 3/4 of the way through
-    keymap = {"1/4": quarts, "1/2": mids, "3/4": quarts3_4}
-    idx = keymap[slicekey]
-    if i == 0:
-        return f"[{idx[i]},:,:]"
-    if i == 1:
-        return f"[:,{idx[i]},:]"
-    if i == 2:
-        return f"[:,:,{idx[i]}]"
-
-    f"[{idx[i]},:,:]", f"[:,{idx[i]},:]", f"[:,:,{idx[i]}]"
-    raise IndexError("Only three dimensions supported.")
 
 
 class BrainSlices:
@@ -114,6 +94,7 @@ class BrainSlices:
         self.slice_positions = [f"{i}/{n_slices}" for i in range(1, n_slices)]
         self.imgs = OrderedDict(get_slice_tuples(self.img))
         self.mask_slices = [OrderedDict(get_slice_tuples(m)) for m in self.masks]
+        self.maskeds = [make_masked(self.img, mask) for mask in self.masks]
 
     def plot(self, vmin: int = 0, ret: bool = False) -> Tuple[Figure, Axes]:
         nrows, ncols = len(self.masks), 1  # one row for each slice position
@@ -165,7 +146,8 @@ class BrainSlices:
         vmax: int = None,
         cmap: str = "gray",
         interpolation: str = None,
-        dpi: int = 256,
+        dpi: int = 100,
+        n_frames: int = 300,
         fig_title: str = None,
         outfile: Path = None,
     ) -> None:
@@ -173,8 +155,12 @@ class BrainSlices:
             """Returns eig_img, raw_img"""
             if ratio < 0 or ratio > 1:
                 raise ValueError("Invalid slice position")
-            x_max, y_max, z_max = np.array(src.shape, dtype=int)
-            x, y, z = np.array(np.floor(np.array(src.shape) * ratio), dtype=int)
+            if len(src.shape) == 3:
+                x_max, y_max, z_max = np.array(src.shape, dtype=int)
+                x, y, z = np.array(np.floor(np.array(src.shape) * ratio), dtype=int)
+            elif len(src.shape) == 4:
+                x_max, y_max, z_max, _ = np.array(src.shape, dtype=int)
+                x, y, z = np.array(np.floor(np.array(src.shape[:-1]) * ratio), dtype=int)
             x = int(10 + ratio * (x_max - 20))  # make x go from 10:-10 of x_max
             y = int(10 + ratio * (y_max - 20))  # make x go from 10:-10 of x_max
             x = x - 1 if x == x_max else x
@@ -199,23 +185,26 @@ class BrainSlices:
                 vn = vmin
             return vn, vm
 
-        def init_frame(src_mask: ndarray, ratio: float, fig: Figure, ax: Axes) -> Tuple[AxesImage, Colorbar, Text]:
-            image = get_slice(self.img, ratio)
-            mask = get_slice(src_mask, ratio)
+        def init_frame(src: ndarray, ratio: float, fig: Figure, ax: Axes) -> Tuple[AxesImage, Colorbar, Text]:
+            # image = get_slice(self.img, ratio)
+            # mask = get_slice(src_mask, ratio)
+            image = get_slice(src, ratio)
             title = "Cropped Voxels"
 
             vn, vm = get_vranges()
-            plot_args = dict(vmin=vn, vmax=vm, cmap=cmap, interpolation=interpolation)
-            im = ax.imshow(image, **plot_args, animated=True)
-            mask = ax.imshow(mask, **self.mask_args, animated=True)
+            # plot_args = dict(vmin=vn, vmax=vm, cmap=cmap, interpolation=interpolation)
+            # im = ax.imshow(image, **plot_args, animated=True)
+            im = ax.imshow(image, animated=True)
+            # mask = ax.imshow(mask, **self.mask_args, animated=True)
             ax.set_xticks([])
             ax.set_yticks([])
             title = ax.set_title(title)
             cb = fig.colorbar(im, ax=ax)
-            return im, mask, cb, title
+            # return im, mask, cb, title
+            return im, cb, title
 
-        def update_axis(ratio: float, ax: Axes, im: AxesImage) -> None:
-            image = get_slice(ratio)
+        def update_axis(src: ndarray, ratio: float, ax: Axes, im: AxesImage) -> None:
+            image = get_slice(src, ratio)
             vn, vm = get_vranges()
             im.set_data(image)
             im.set_clim(vn, vm)
@@ -223,40 +212,47 @@ class BrainSlices:
 
         # owe a lot to below for animating the colorbars
         # https://stackoverflow.com/questions/39472017/how-to-animate-the-colorbar-in-matplotlib
-        def init(title: Optional[str] = fig_title) -> Tuple[Figure, Axes, List[AxesImage], List[Colorbar], List[Text]]:
+        def init() -> Tuple[Figure, Axes, List[AxesImage], List[Colorbar], List[Text]]:
             fig: Figure
             axes: Axes
-            fig, ax = plt.subplots(nrows=1, ncols=1, sharex=False, sharey=False)
+            fig, axes = plt.subplots(nrows=len(self.maskeds), ncols=1, sharex=False, sharey=False)
 
             ims: List[AxesImage] = []
             cbs: List[Colorbar] = []
             titles: List[Text] = []
 
-            im, cb, title = init_frame(ratio=0.0, fig=fig, ax=ax)
-            ims.append(im)
-            cbs.append(cb)
-            titles.append(title)
+            for ax, masked, title in zip(axes.flat, self.maskeds, self.masknames):
+                im, cb, title = init_frame(src=masked, ratio=0.0, fig=fig, ax=ax)
+                ims.append(im)
+                cbs.append(cb)
+                titles.append(title)
 
-            fig.tight_layout(h_pad=0)
             if fig_title is not None:
                 fig.suptitle(fig_title)
+            fig.tight_layout(h_pad=0)
             fig.set_size_inches(w=8, h=3)
             fig.subplots_adjust(hspace=0.2, wspace=0.0)
-            return fig, ax, ims, cbs, titles
+            return fig, axes, ims, cbs, titles
 
-        N_FRAMES = 300
+        N_FRAMES = n_frames
         ratios = np.linspace(0, 1, num=N_FRAMES)
 
-        fig, ax, ims, cbs, titles = init()
+        fig, axes, ims, cbs, titles = init()
         ani = None
 
         # awkward, but we need this defined after to close over the above variables
         def animate(f: int) -> None:
             ratio = ratios[f]
-            update_axis(ratio=ratio, ax=ax, im=ims[0])
+            for im, masked, ax in zip(ims, self.maskeds, axes):
+                update_axis(src=masked, ratio=ratio, ax=ax, im=im)
 
         ani = animation.FuncAnimation(
-            fig, animate, frames=N_FRAMES, blit=False, interval=12, repeat_delay=100 if outfile is None else None
+            fig,
+            animate,
+            frames=N_FRAMES,
+            blit=False,
+            interval=3600 / N_FRAMES,
+            repeat_delay=100 if outfile is None else None,
         )
 
         if outfile is None:

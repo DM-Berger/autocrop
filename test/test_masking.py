@@ -70,6 +70,32 @@ def test_mask_full(capsys: Any) -> None:
             print(f"Finished image {i}")
 
 
+def test_mask_video(capsys: Any) -> None:
+    N = 4
+    N_SAMPLES = 10
+    np.random.seed(42)
+    for i, path in enumerate(np.random.choice(CC359, size=N_SAMPLES, replace=False)):
+        img = pad_to_cube(nib.load(str(path)).get_fdata())
+        flat = img.ravel()
+        km = MiniBatchKMeans(N, batch_size=1000).fit(flat.reshape(-1, 1))
+        gs = [km.labels_ == i for i in range(N)]
+        maxs = sorted([np.max(flat[g]) for g in gs])
+        thresh = maxs[0]
+
+        mask = np.zeros_like(img, dtype=int)
+        mask[img > thresh] = 1
+        # masked = make_masked(img, mask)
+
+        naive_mask = np.zeros_like(img, dtype=int)
+        naive_mask[img > np.percentile(img, 80)] = 1
+
+        slices = BrainSlices(img, masks=[mask, naive_mask], masknames=["kmeans", "percentile80"], n_slices=7)
+        # naive_masked = make_masked(img, naive_mask)
+        with capsys.disabled():
+            slices.animate_masks(dpi=150, n_frames=100, outfile=f"mask_compare{i}.mp4")
+            print(f"Finished image {i}")
+
+
 def test_dbscan(capsys) -> None:
     N = 4
     N_SAMPLES = 10
