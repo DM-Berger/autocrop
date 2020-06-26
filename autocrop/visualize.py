@@ -151,39 +151,15 @@ class BrainSlices:
             z = z - 1 if z == z_max else z
             return np.concatenate([src[x, :, :], src[:, y, :], src[:, :, z]], axis=1)
 
-        def get_vranges() -> Tuple[Optional[float], Optional[float]]:
-            image = self.img
-            vals = image[image > 0]
-            if vmax is None:
-                vm = None
-            if isinstance(vmax, int):
-                vm = np.percentile(vals, vmax)
-            if isinstance(vmax, float):
-                vm = vmax
-            if vmin is None:
-                vn = None
-            if isinstance(vmin, int):
-                vn = np.percentile(vals, vmin)
-            if isinstance(vmin, float):
-                vn = vmin
-            return vn, vm
-
         def init_frame(src: ndarray, ratio: float, fig: Figure, ax: Axes) -> Tuple[AxesImage, Colorbar, Text]:
-            # image = get_slice(self.img, ratio)
-            # mask = get_slice(src_mask, ratio)
             image = get_slice(src, ratio)
             title = "Cropped Voxels"
 
-            vn, vm = get_vranges()
-            # plot_args = dict(vmin=vn, vmax=vm, cmap=cmap, interpolation=interpolation)
-            # im = ax.imshow(image, **plot_args, animated=True)
             im = ax.imshow(image, animated=True)
-            # mask = ax.imshow(mask, **self.mask_args, animated=True)
             ax.set_xticks([])
             ax.set_yticks([])
             title = ax.set_title(title)
             cb = fig.colorbar(im, ax=ax)
-            # return im, mask, cb, title
             return im, cb, title
 
         def update_axis(src: ndarray, ratio: float, ax: Axes, im: AxesImage) -> None:
