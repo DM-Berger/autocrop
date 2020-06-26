@@ -1,21 +1,9 @@
-"""
-NOTES
------
-The resulting images are highly bimodal at each time slices. That is,
-regardless of whether looking at the delta image (diff from full eigensignal)
-or just the deletion signals, the vast majority of values are zero, and the
-remaining will lie almost entirely near the maximum value.
-"""
-import sys
 from collections import OrderedDict
-from enum import Enum, unique
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
-import nibabel as nib
 import numpy as np
-import seaborn as sbn
 from matplotlib import animation
 from matplotlib.colorbar import Colorbar
 from matplotlib.image import AxesImage
@@ -24,14 +12,9 @@ from matplotlib.text import Text
 from numpy import ndarray
 
 
-@unique
-class Src(Enum):
-    IMG = "IMG"
-    RAW = "RAW"
-    RAW_MEAN = "RAW_MEAN"
-
-
 def make_masked(img: ndarray, mask: ndarray, imin: Any = None, imax: Any = None) -> ndarray:
+    """Apply a 3D binary mask to a 1-channel, 3D ndarray `img` by creating a 3-channel
+    image with masked regions shown in transparent blue. """
     img3d = np.zeros([*img.shape, 3], dtype=int)
     imin = img.min() if imin is None else imin
     imax = img.max() if imax is None else imax
@@ -42,17 +25,12 @@ def make_masked(img: ndarray, mask: ndarray, imin: Any = None, imax: Any = None)
         masked = scaled + 200 * np.array(mask, dtype=int)
         img3d[:, :, :, 2] = masked
         return img3d
-    # if len(img.shape) == 3:
-    #     img3d[:, :, 0] = scaled
-    #     img3d[:, :, 1] = scaled
-    #     masked = scaled + 200 * np.array(mask, dtype=int)
-    #     img3d[:, :, 2] = masked
-    #     return img3d
     raise ValueError("Only accepts 1-channel or 3-channel images")
 
 
 def pad_to_cube(img: ndarray) -> ndarray:
-    """assumes images is 1-channel and 3D"""
+    """assumes img is 1-channel and 3D. Adds padding around edges (centred) so that final
+    image is a cube."""
     pad_shape = np.max(img.shape) * np.ones([3], dtype=int)
     full_padlengths = pad_shape - np.array(img.shape)
     pads = np.array([[padlength // 2, padlength // 2 + padlength % 2] for padlength in full_padlengths])
@@ -64,9 +42,14 @@ class BrainSlices:
 
     Parameters
     ----------
-    img: eigenimage
-        If img is multichannel, assumes channels are last
-    raw: original image
+    img: ndarray
+        nifti get_fdata() 3D array.
+    masks: List[ndarray]
+        List of masks that will be applied to `img` for comparison.
+    masknames: List[str]
+        Labels for each mask
+    n_slices: int
+        How many slices to take, if using static images.
     """
 
     def __init__(
